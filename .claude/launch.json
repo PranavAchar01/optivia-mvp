@@ -1,0 +1,36 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "/Users/pranavachar/optivia_mvp/.venv/bin/uvicorn",
+      "runtimeArgs": ["backend.main:app", "--port", "8000", "--reload"],
+      "port": 8000,
+      "env": {
+        "PYTHONPATH": "/Users/pranavachar/optivia_mvp"
+      }
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3001,
+      "autoPort": true,
+      "cwd": "/Users/pranavachar/optivia_mvp/frontend"
+    },
+    {
+      "name": "optivia-website",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000,
+      "cwd": "/Users/pranavachar/optivia-website"
+    },
+    {
+      "name": "desktop",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 1420,
+      "cwd": "/Users/pranavachar/optivia_mvp/desktop"
+    }
+  ]
+}

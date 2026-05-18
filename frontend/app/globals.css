@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 224 71% 4%;
+    --foreground: 213 31% 91%;
+    --card: 224 71% 6%;
+    --card-foreground: 213 31% 91%;
+    --primary: 210 100% 66%;
+    --primary-foreground: 224 71% 4%;
+    --secondary: 222 47% 11%;
+    --secondary-foreground: 213 31% 91%;
+    --muted: 223 47% 11%;
+    --muted-foreground: 215 20% 55%;
+    --accent: 216 34% 17%;
+    --accent-foreground: 210 100% 66%;
+    --destructive: 0 63% 55%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 216 34% 17%;
+    --input: 216 34% 17%;
+    --ring: 210 100% 66%;
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground font-mono antialiased; }
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* React Flow overrides — force dark everywhere */
+.react-flow,
+.react-flow__renderer,
+.react-flow__zoompane,
+.react-flow__pane { background: hsl(224 71% 4%) !important; }
+.react-flow__background { background: hsl(224 71% 4%) !important; }
+.react-flow__edge-path { stroke: hsl(215 20% 35%); }
+.react-flow__minimap { background: hsl(224 71% 6%); border: 1px solid hsl(216 34% 17%); border-radius: 0.5rem; }
+.react-flow__controls { border: 1px solid hsl(216 34% 17%) !important; border-radius: 0.5rem !important; overflow: hidden !important; background: hsl(224 71% 6%) !important; }
+.react-flow__controls-button { background: hsl(224 71% 6%) !important; border-bottom: 1px solid hsl(216 34% 17%) !important; color: hsl(213 31% 91%) !important; fill: hsl(213 31% 91%) !important; }
+.react-flow__controls-button:hover { background: hsl(216 34% 17%) !important; }
+.react-flow__controls-button svg { fill: hsl(213 31% 91%) !important; }

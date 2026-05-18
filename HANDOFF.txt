@@ -1,0 +1,403 @@
+================================================================================
+OPTIVIA — STAGE 1 MVP HANDOFF
+================================================================================
+Repo:     /Users/pranavachar/optivia_mvp
+Sibling:  /Users/pranavachar/optivia-website   (marketing + architecture docs)
+Status:   Stage 1 (Wrapper MVP) complete; desktop app + embedded shell shipped
+Date:     May 2026
+
+
+--------------------------------------------------------------------------------
+1. WHAT OPTIVIA IS
+--------------------------------------------------------------------------------
+
+A pre-execution optimisation layer for agentic coding CLIs (Claude Code in
+Stage 1). It sits upstream of Claude Code: takes a sloppy human prompt,
+classifies it, scores it on 6 dimensions, asks clarifying questions if needed,
+synthesises a master prompt, picks the right model tier, plans a sub-agent
+fleet, and dispatches everything into Claude Code.
+
+Three-stage roadmap (per architecture spec §1):
+  Stage 1 — Wrapper MVP        (DONE — this repo)
+  Stage 2 — Custom routing     (logged trace data trains proprietary models)
+  Stage 3 — V1 production      (online learning, multi-tier execution, caching)
+
+
+--------------------------------------------------------------------------------
+2. REPO LAYOUT
+--------------------------------------------------------------------------------
+
+  optivia_mvp/
+    backend/                   Python FastAPI backend (the "Optivia engine")
+      core/
+        models.py              Pydantic models — TaskType, TaskScores, etc.
+        math_core.py           Pure math: scorer, clarification trigger,
+                               quality scalar, n_agents schedule
+      routing/
+        base.py                Router protocol + RoutingContext
+        heuristic.py           Stage 1 default — κ-threshold rules
+        routellm.py            Matrix-factorisation cost/quality router
+        llm_judge.py           Claude Haiku structured-output router
+        shadow.py              Runs all 3 routers in parallel, logs alts
+      pipeline/
+        state.py               OptiviaState TypedDict (LangGraph state)
+        graph.py               LangGraph StateGraph wiring (17 nodes)
+        nodes/                 One file per node group:
+          prompt_intake.py
+          session_loader.py    Tier-0 hash + Tier-1 semantic cache
+          fast_intent.py
+          classify_score.py    instructor + Claude Haiku
+          clarification.py     EIG heuristic + question gen
+          synthesize.py        DSPy signature + Anthropic prompt caching
+          route.py             Shadow router runner + fleet generator
+          visualizer.py        React Flow JSON for the workflow graph
+          execution.py         (simulated in Stage 1 — see notes)
+          quality_monitor.py   Q_t scoring + adaptation engine
+          persist.py           Writes traces, routing_decisions, outcomes
+      db/
+        schema.sql             Trace contract — 5 tables
+        client.py              asyncpg client; semantic cache + RAG queries
+      embeddings.py            voyage-code-3 + cosine similarity
+      synthesis.py             DSPy signature + prompt caching
+      proxy.py                 ANTHROPIC_BASE_URL proxy — injects master prompt
+      main.py                  FastAPI app — 16 endpoints
+      config.py                pydantic-settings; loads .env over empty env vars
+    cli/
+      main.py                  typer CLI (run / serve / install / uninstall)
+      mcp_server.py            MCP Surface 2 — exposes optimize_prompt tool
+      hook_pretool.py          Claude Code PreToolUse safety hook
+      hook_posttool.py         Claude Code PostToolUse observability hook
+    desktop/                   Tauri 2 + React 19 desktop app (NEW)
+      src/
+        App.tsx                Top-level UI — header, terminal, shell, prompt
+        Shell.tsx              xterm.js + PTY wiring
+        App.css                Black background, Geist Mono only
+      src-tauri/
+        src/
+          lib.rs               Tauri commands: dispatch_to_claude,
+                               install_shim, uninstall_shim, shim_status
+          pty.rs               PTY session management via portable-pty
+          main.rs              Entry point
+        Cargo.toml             Rust deps: portable-pty, tauri-plugin-http
+        tauri.conf.json        Bundle config — productName "Optivia"
+        capabilities/
+          default.json         http:default permission for the http plugin
+        icons/                 App icons
+    frontend/                  Old Next.js frontend (LEGACY — see notes)
+    tests/                     pytest suite (68 tests passing)
+    .github/workflows/
+      release-desktop.yml      Cross-platform release pipeline (NEW)
+    .claude/
+      skills/optivia/SKILL.md
+      commands/optivia.md
+      launch.json              backend / frontend / desktop dev configs
+    .env                       Anthropic + Voyage API keys (rotate before ship)
+    pyproject.toml             Python package + dev deps
+    HANDOFF.txt                <-- you are here
+
+
+--------------------------------------------------------------------------------
+3. STACK
+--------------------------------------------------------------------------------
+
+Backend
+  Python 3.12, FastAPI, asyncio, Pydantic v2
+  LangGraph (StateGraph orchestration)
+  LiteLLM (LLM gateway)
+  instructor + Anthropic SDK (structured outputs)
+  DSPy (synthesis signature)
+  Postgres 16 + pgvector (built from source for PG18 — see notes)
+  Redis 7 (local; no RediSearch in Stage 1)
+  voyage-code-3 (1024-d embeddings; payment method needed for higher RPM)
+  Langfuse (observability — keys in .env)
+
+Desktop
+  Tauri 2 (Rust shell, ~5 MB bundle)
+  React 19 + Vite 7
+  xterm.js + portable-pty (real interactive terminal)
+  Geist Mono (via @fontsource/geist-mono)
+  No CSS framework — direct styles match the website terminal 1:1
+
+
+--------------------------------------------------------------------------------
+4. KEY ENDPOINTS (FastAPI on :8000)
+--------------------------------------------------------------------------------
+
+  POST /optimize                Main pipeline entry
+  POST /optimize/continue       Clarification round-trip
+  POST /feedback                User thumbs-up/down feedback
+  GET  /traces/{workspace_id}   List recent traces (UUID required!)
+  GET  /metrics                 Aggregate metrics for nightly eval
+  POST /internal/observe        PostToolUse hook ingest
+  ANY  /proxy/req/{id}/v1/messages
+                                ANTHROPIC_BASE_URL proxy — injects master
+                                prompt as cached system message (§6.5)
+  GET  /docs                    Swagger UI
+
+
+--------------------------------------------------------------------------------
+5. HOW TO RUN — LOCAL DEV
+--------------------------------------------------------------------------------
+
+Prerequisites:
+  brew install postgresql@18 redis pgvector  (pgvector via source — see notes)
+  brew services start postgresql@18 redis
+  createdb optivia
+  psql optivia < backend/db/schema.sql
+
+Backend (port 8000):
+  cd /Users/pranavachar/optivia_mvp
+  PYTHONPATH=$(pwd) .venv/bin/uvicorn backend.main:app --reload --port 8000
+
+  Or use the Claude Code preview tooling:
+    .claude/launch.json defines: backend, frontend, desktop, optivia-website
+
+Desktop app (dev mode, hot reload):
+  cd /Users/pranavachar/optivia_mvp/desktop
+  npm install
+  npm run tauri dev
+
+Tests:
+  pytest -q tests/                # 68 tests passing
+
+
+--------------------------------------------------------------------------------
+6. HOW TO BUILD — DESKTOP RELEASES
+--------------------------------------------------------------------------------
+
+Local macOS build:
+  cd desktop
+  npm run tauri build
+  # Output:
+  #   src-tauri/target/release/bundle/dmg/Optivia_0.1.0_aarch64.dmg
+  #   src-tauri/target/release/bundle/macos/Optivia.app
+  # Build time: ~1.5 min incremental, ~5 min cold
+
+Cross-platform release (recommended):
+  git tag desktop-v0.1.0
+  git push origin desktop-v0.1.0
+
+  GitHub Actions (.github/workflows/release-desktop.yml) builds:
+    - macos-latest  arm64  → .dmg
+    - macos-latest  x64    → .dmg
+    - ubuntu-22.04  x64    → .AppImage + .deb
+  Then publishes a GitHub Release with all four artifacts attached.
+
+  Linux builds MUST run on Linux — Tauri can't cross-compile cleanly from Mac.
+
+
+--------------------------------------------------------------------------------
+7. THE DISPATCH FLOW (newest piece — this is what wires everything together)
+--------------------------------------------------------------------------------
+
+The desktop app has TWO panels stacked vertically:
+
+  +--------------------------------------------------+
+  | OPTIVIA · pre-execution layer       [SETTINGS]   |
+  +--------------------------------------------------+
+  |  ● ● ●  OPTIVIA · LANGGRAPH ENGINE               |
+  |  › <your prompt>                                 |
+  |  cache_lookup  miss                              |
+  |  fast_intent   NEW_CODE · conf 0.82              |
+  |  classify      complexity 0.84 · risk 0.72 · …   |
+  |  …                                               |
+  |  dispatch      queued · run claude in your term  |  <- top pane (60%)
+  +--------------------------------------------------+
+  |  ● ● ●  SHELL · TYPE `claude` TO DISPATCH        |
+  |  optivia  shell ready — submit a prompt to …    |
+  |  $                                               |  <- bottom pane (40%)
+  +--------------------------------------------------+
+  | [ describe a coding task — press enter to … ] [ENTER ↵] |
+  +--------------------------------------------------+
+
+The bottom pane is a REAL PTY running the user's $SHELL with an init script
+that defines a `claude()` function. The init script lives at:
+  ~/.optivia/shell/init.sh
+and is auto-written on first launch by Rust (see desktop/src-tauri/src/pty.rs).
+
+Submit flow:
+  1. User types prompt → Enter
+  2. Frontend POSTs to {apiBase}/optimize
+  3. Backend runs full LangGraph pipeline
+  4. On success, frontend invokes Tauri command `dispatch_to_claude(payload)`
+  5. Rust writes payload to:
+       ~/.optivia/queue/<timestamp>.json   (history)
+       ~/.optivia/current.json             (latest, what the shim reads)
+  6. LangGraph panel's `dispatch` line flips green: "queued · run claude …"
+
+Consume flow (in the embedded shell):
+  1. User types `claude` (no args) + Enter
+  2. The aliased `claude` function:
+       a. Reads ~/.optivia/current.json
+       b. Extracts {prompt, proxy_base, trace_id}
+       c. Renames the file → *.consumed.json (so it can't fire twice)
+       d. Sets ANTHROPIC_BASE_URL=$proxy_base/proxy/req/$trace_id
+       e. Runs `command claude "<the master prompt>"`
+  3. Claude Code starts with the optimised prompt as the first message
+  4. Every Anthropic API call from that Claude Code session goes through
+     Optivia's proxy (backend/proxy.py), which:
+       - Injects the system preamble with cache_control: ephemeral
+       - Logs every call to the trace
+       - (Future Stage 2) forces the chosen model
+
+Plain `claude --resume`, `claude /init`, `claude -p "foo"`, etc. fall through
+unchanged — only bare `claude` with a queued prompt triggers injection.
+
+Optional install for the user's regular terminal (not the embedded shell):
+  Settings → INSTALL SHIM
+  Adds the same shim block (between marker comments) to ~/.zshrc and ~/.bashrc
+  so the user can run `claude` in iTerm/Terminal/Ghostty and pick up the
+  Optivia queue too. UNINSTALL removes it cleanly using the markers.
+
+
+--------------------------------------------------------------------------------
+8. KEY MATH (architecture spec §4)
+--------------------------------------------------------------------------------
+
+Score vector v_t = (κ_t, σ_t, τ_t) with 6 dimensions feeding into κ:
+  κ_t = round(1 + 9 · avg(δ_s, δ_a, δ_r, δ_d, δ_c)) ∈ {1,…,10}
+  σ_t = 1 − δ_a   (specificity = inverse ambiguity)
+
+Clarification trigger:
+  (κ ≥ 7 ∧ σ < 0.5) ∨ (δ_s ≥ 0.7 ∧ c_t < 0.5) ∨ (κ = 10)
+
+Routing (heuristic — Stage 1 active router):
+  κ table:        1-3→Haiku · 4-5→Haiku · 6-7→Sonnet · 8→Sonnet · 9-10→Opus
+  n_agents table: 1,1,1,2,3,4,5,6,8,8     (more fragmented than spec defaults)
+  Hard guardrail: risk ≥ 0.7 never routes to Haiku
+
+Shadow routers (logged but not active):
+  routellm_mf_v1   — bilinear win-prob with cascade rule (τ=0.08)
+  llm_judge_v1     — Claude Haiku structured-output
+
+Quality scalar:
+  Q_t = ¼ · (goal_met + no_errors + matches_conventions + minimal_changes)
+
+
+--------------------------------------------------------------------------------
+9. KNOWN ISSUES / GOTCHAS
+--------------------------------------------------------------------------------
+
+[CRITICAL] Embedded shell PATH is missing /opt/homebrew/bin and /usr/local/bin
+  Symptom (seen in screenshot): `zsh: command not found: claude`
+  Cause: Tauri inherits a minimal PATH; the spawned PTY's $SHELL doesn't load
+         the user's full login profile, so npm/claude/brew binaries miss.
+  Fix:   In desktop/src-tauri/src/pty.rs, before `cmd.env(...)`, prepend the
+         common bin dirs:
+           let mut path = std::env::var("PATH").unwrap_or_default();
+           for p in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+             if !path.contains(p) { path = format!("{p}:{path}"); }
+           }
+           cmd.env("PATH", path);
+         Better: invoke `$SHELL -l -c env` once at startup to capture the
+         user's full login PATH.
+
+[MEDIUM] pgvector for Postgres 18 had to be built from source
+  brew install pgvector installs a binary that doesn't link against PG18.
+  Workaround used:
+    cd /tmp && git clone --depth 1 https://github.com/pgvector/pgvector.git
+    cd pgvector
+    PG_CONFIG=/opt/homebrew/opt/postgresql@18/bin/pg_config make install
+  This needs to be redone on a fresh machine.
+
+[MEDIUM] backend/config.py force-loads .env to override empty env vars
+  Claude Code (the desktop tool) sets ANTHROPIC_API_KEY="" in spawned shells,
+  which would otherwise shadow the value in .env. The fix is at the top of
+  config.py — it manually loads .env and only sets keys when the env var is
+  empty/missing. Don't remove this.
+
+[LOW] /traces/{workspace_id} requires a real UUID
+  Frontend uses 00000000-0000-0000-0000-000000000000 as the default.
+  Backend's POST /optimize defaults workspace_id to the same UUID when omitted
+  so traces accumulate under one workspace.
+
+[LOW] execute_via_claude_code node is a SIMULATED stub
+  In Stage 1, the LangGraph "execute" node doesn't actually run Claude Code —
+  it logs that it would. Real execution happens via the desktop dispatch flow
+  (the user runs `claude` themselves). Stage 2 should wire a real subprocess
+  spawn here for headless / CI use.
+
+[LOW] Anthropic API key in .env is hot — rotate before any public release
+  See line 2 of .env. Created during dev, not for production.
+
+[LOW] Voyage AI free tier is rate-limited (3 RPM, 10K TPM)
+  Add a payment method at voyageai.com for production. Embeddings fail open
+  (return zero vectors) so the pipeline doesn't crash.
+
+[LOW] frontend/ (Next.js) is now LEGACY
+  Replaced by desktop/. Kept for reference only — safe to delete with:
+    rm -rf frontend/
+
+[LOW] Existing Optivia.app bundles are unsigned
+  macOS will Gatekeeper-block them on first open. Right-click → Open, or
+  spctl --add Optivia.app. For real distribution, sign + notarise via Apple
+  Developer ID and add the secrets to the GitHub Actions workflow.
+
+
+--------------------------------------------------------------------------------
+10. STAGE 2 / STAGE 3 NEXT STEPS (per architecture spec §5, §7)
+--------------------------------------------------------------------------------
+
+Stage 2 — Custom Routing (priority order):
+  1. Wire shadow router data into a training pipeline
+     - Joins traces × routing_decisions × outcomes
+     - Trains a real RouteLLM matrix-factoriser checkpoint
+     - Replace routing/routellm.py's hand-tuned weights
+  2. Stand up a hosted backend (Fly.io for web, Modal for workers)
+     - Today the desktop app points at http://localhost:8000
+     - Move to a stable URL the user can paste in Settings
+  3. Deploy Postgres + pgvector to Neon (config already in original .env)
+  4. Replace the simulated execute_via_claude_code with a real subprocess
+     spawn that captures diff + tests passed + exit_code into outcomes
+  5. Online-learning loop: feedback → trains a clarifier preference model
+
+Stage 3 — V1 Production:
+  6. Multi-tier execution (cheap model retries before escalation)
+  7. Plan caching by workflow template
+  8. Code-signing + notarisation for Mac, GPG-signed .deb for Linux
+  9. Auto-updater (Tauri has built-in support)
+  10. Teams/billing layer + per-workspace budget enforcement
+
+
+--------------------------------------------------------------------------------
+11. RECENT WORK (chronological)
+--------------------------------------------------------------------------------
+
+  - Implemented full Stage 1 backend per architecture spec sections 4 + 5
+  - 17-node LangGraph with shadow routing + clarification round-trip
+  - Built Anthropic proxy for Claude Code master-prompt injection
+  - voyage-code-3 embeddings + Tier 1 semantic cache
+  - 68 tests passing
+  - Deployed locally: PostgreSQL 18 + pgvector (from source) + Redis
+  - Built Next.js frontend → replaced with Tauri desktop app
+  - Cloned the optivia-website "models page" terminal UI 1:1 into the desktop
+  - Made workflow plan agents fragmented + short-titled (n_agents up to 8)
+  - Auto-dispatch flow: ~/.optivia/queue + ~/.optivia/current.json
+  - Embedded PTY shell inside the app (xterm.js + portable-pty)
+  - GitHub Actions release pipeline: .dmg arm64, .dmg x64, .AppImage, .deb
+
+
+--------------------------------------------------------------------------------
+12. CONTACT POINTS / WHERE TO GO NEXT
+--------------------------------------------------------------------------------
+
+  Architecture spec doc:        ~/Library/Mobile Documents/com~apple~TextEdit
+                                /Documents/optivia.rtf
+  Marketing site repo:          /Users/pranavachar/optivia-website
+  Memory notes:                 ~/.claude/projects/-Users-pranavachar-optivia
+                                -mvp/memory/
+                                  project_overview.md
+                                  architecture.md
+
+  Key files to read first when picking this up:
+    1. backend/pipeline/graph.py    (the whole pipeline at a glance)
+    2. backend/main.py              (HTTP surface)
+    3. desktop/src/App.tsx          (everything the user sees)
+    4. desktop/src-tauri/src/pty.rs (embedded shell + claude alias init)
+    5. backend/routing/heuristic.py (active router behaviour)
+    6. backend/proxy.py             (master-prompt injection mechanism)
+
+
+================================================================================
+END OF HANDOFF
+================================================================================
