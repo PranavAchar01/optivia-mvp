@@ -32,14 +32,14 @@ type OptimizeResponse = {
   // Legacy fields
   request_id: string;
   trace_id: string;
-  master_prompt: string;
-  model: string;
+  master_prompt: string | null;
+  model: string | null;
   n_agents: number;
   slash_commands: string[];
   workflow_plan: string[];
-  complexity: number;
-  specificity: number;
-  task_type: string;
+  complexity: number | null;
+  specificity: number | null;
+  task_type: string | null;
   requires_clarification: boolean;
   clarification_questions: ClarificationQ[];
 };
@@ -73,13 +73,13 @@ function modelLabel(model: string): string {
 
 function buildLines(r: OptimizeResponse, dispatch: DispatchState): Line[] {
   const lines: Line[] = [];
-  const k = r.complexity;
-  const sigma = r.specificity;
+  const k = r.complexity ?? 5;
+  const sigma = r.specificity ?? 0.5;
   const ambiguity = Math.max(0, Math.min(1, 1 - sigma));
   const intent = (r.task_type || r.Task_Type || "unknown").toUpperCase();
-  const mLabel = modelLabel(r.model);
-  const mColor = modelColor(r.model);
-  const isOpus = r.model.toLowerCase().includes("opus");
+  const mLabel = modelLabel(r.model ?? "");
+  const mColor = modelColor(r.model ?? "");
+  const isOpus = (r.model ?? "").toLowerCase().includes("opus");
   const nodes = r.Nodes ?? [];
   const criticalPath = r.Critical_Path ?? "";
   const cpSet = new Set(criticalPath.split(" -> ").filter(Boolean));
@@ -110,7 +110,7 @@ function buildLines(r: OptimizeResponse, dispatch: DispatchState): Line[] {
     });
   }
 
-  const tokens = Math.max(120, Math.round(r.master_prompt.length / 3.5));
+  const tokens = Math.max(120, Math.round((r.master_prompt ?? "").length / 3.5));
   lines.push({
     label: "synthesize",
     value: `${tokens.toLocaleString()} tokens · preamble cached`,
@@ -193,11 +193,13 @@ function Terminal({
   busy,
   result,
   dispatch,
+  elapsed,
 }: {
   prompt: string;
   busy: boolean;
   result: OptimizeResponse | null;
   dispatch: DispatchState;
+  elapsed: number;
 }) {
   const lines = useMemo(() => (result ? buildLines(result, dispatch) : []), [result, dispatch]);
   const promptText = (result?.master_prompt?.split("\n")[0] ?? prompt).slice(0, 240);
@@ -335,7 +337,7 @@ function Terminal({
                 animation: "pulse 1s ease-in-out infinite",
               }}
             >
-              classify · score · synthesize · route ···
+              classify · score · synthesize · route · {elapsed}s
             </span>
           </div>
         )}
@@ -653,6 +655,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [submittedPrompt, setSubmittedPrompt] = useState("");
   const [dispatch, setDispatch] = useState<DispatchState>("idle");
+  const [elapsed, setElapsed] = useState(0);
+  const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -667,11 +671,14 @@ export default function App() {
     setResult(null);
     setDispatch("idle");
     setSubmittedPrompt(prompt.trim());
+    setElapsed(0);
+    elapsedRef.current = setInterval(() => setElapsed(s => s + 1), 1000);
     try {
       const res = await tauriFetch(`${apiBase.replace(/\/$/, "")}/optimize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: prompt.trim() }),
+        connectTimeout: 180_000,
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -682,24 +689,33 @@ export default function App() {
       // Auto-dispatch: write the master prompt to ~/.optivia/current.json so the
       // embedded shell's claude() shim picks it up the next time `claude` is typed.
       try {
-        await invoke("dispatch_to_claude", {
-          payload: {
-            prompt: data.master_prompt,
-            model: data.model,
-            n_agents: data.n_agents,
-            task_type: data.task_type,
-            trace_id: data.trace_id,
-            proxy_base: apiBase.replace(/\/$/, ""),
-          },
-        });
+        if (data.master_prompt && data.model) {
+          await invoke("dispatch_to_claude", {
+            payload: {
+              prompt: data.master_prompt,
+              model: data.model,
+              n_agents: data.n_agents,
+              task_type: data.task_type ?? "unknown",
+              trace_id: data.trace_id,
+              proxy_base: apiBase.replace(/\/$/, ""),
+            },
+          });
+        }
         setDispatch("queued");
       } catch {
         setDispatch("error");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "request failed");
+      const msg =
+        err instanceof Error ? err.message
+        : typeof err === "string" ? err
+        : (err as { message?: string })?.message
+          ?? JSON.stringify(err)
+          ?? "request failed";
+      setError(msg);
     } finally {
       setBusy(false);
+      if (elapsedRef.current) clearInterval(elapsedRef.current);
     }
   }
 
@@ -809,6 +825,7 @@ export default function App() {
             busy={busy}
             result={result}
             dispatch={dispatch}
+            elapsed={elapsed}
           />
         </div>
         <div style={{ flex: "1 1 40%", minHeight: 200, display: "flex" }}>

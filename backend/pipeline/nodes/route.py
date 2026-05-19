@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import structlog
 import instructor
-from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 
+import google.generativeai as genai
+
 from backend.config import settings
+from backend.core.llm import llm_client
 from backend.core.models import WorkflowPlan
 from backend.pipeline.state import OptiviaState
 from backend.routing import RoutingContext, get_router_runner
@@ -16,7 +19,7 @@ from backend.routing.safety_router import arm_catalog, get_allowed_arms
 
 log = structlog.get_logger(__name__)
 
-client = instructor.from_anthropic(AsyncAnthropic(api_key=settings.anthropic_api_key))
+genai.configure(api_key=settings.gemini_api_key)
 
 
 # ---------------------------------------------------------------------------
@@ -253,27 +256,22 @@ async def fleet_generator(state: OptiviaState) -> OptiviaState:
         return state
 
     try:
-        result: FleetSpec = await client.chat.completions.create(
-            model=settings.model_sonnet,
-            max_tokens=2048,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Task type: {task_cls.task_type.value if task_cls else 'unknown'}\n"
-                        f"Complexity κ={scores.complexity if scores else '?'}\n"
-                        f"Scope δ_s={scores.scope if scores else '?'} | "
-                        f"Dependency δ_d={scores.dependency if scores else '?'}\n"
-                        f"n_agents target: {n_agents} (you MUST produce exactly this many roles)\n\n"
-                        f"Master prompt:\n{master.synthesized_prompt[:1200]}\n\n"
-                        f"Decompose into {n_agents} fragmented agents. Each agent owns one "
-                        f"concrete piece — single file, single layer, or single phase."
-                    ),
-                }
-            ],
-            system=_FLEET_SYSTEM,
+        user_prompt = (
+            f"Task type: {task_cls.task_type.value if task_cls else 'unknown'}\n"
+            f"Complexity κ={scores.complexity if scores else '?'}\n"
+            f"Scope δ_s={scores.scope if scores else '?'} | "
+            f"Dependency δ_d={scores.dependency if scores else '?'}\n"
+            f"n_agents target: {n_agents} (you MUST produce exactly this many roles)\n\n"
+            f"Master prompt:\n{master.synthesized_prompt[:1200]}\n\n"
+            f"Decompose into {n_agents} fragmented agents. Each agent owns one "
+            f"concrete piece — single file, single layer, or single phase."
+        )
+        result: FleetSpec = await llm_client.structured_generate(
+            system_prompt=_FLEET_SYSTEM,
+            user_prompt=user_prompt,
             response_model=FleetSpec,
         )
+
 
         result.roles = _validate_dag(result.roles)
         state["fleet_spec"] = result.model_dump()

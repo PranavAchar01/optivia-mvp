@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import structlog
-import instructor
-from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from backend.config import settings
+from backend.core.llm import llm_client
 from backend.core.math_core import enrich_scores, should_clarify
 from backend.core.models import (
     Clarification,
@@ -19,8 +18,6 @@ from backend.core.models import (
 from backend.pipeline.state import OptiviaState
 
 log = structlog.get_logger(__name__)
-
-client = instructor.from_anthropic(AsyncAnthropic(api_key=settings.anthropic_api_key))
 
 _MAX_CLARIFICATION_ROUNDS = 2
 
@@ -66,20 +63,13 @@ Never ask about things already specified in the prompt.
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
 async def _call_clarifier_llm(raw: str, scores_str: str) -> ClarifyOutput:
-    return await client.chat.completions.create(
-        model=settings.model_sonnet,
-        max_tokens=512,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"Developer prompt:\n\"\"\"\n{raw}\n\"\"\"\n\n"
-                    f"Current scores: {scores_str}\n\n"
-                    "Generate 1–3 clarifying questions."
-                ),
-            }
-        ],
-        system=_CLARIFIER_SYSTEM,
+    return await llm_client.structured_generate(
+        system_prompt=_CLARIFIER_SYSTEM,
+        user_prompt=(
+            f"Developer prompt:\n\"\"\"\n{raw}\n\"\"\"\n\n"
+            f"Current scores: {scores_str}\n\n"
+            "Generate 1–3 clarifying questions."
+        ),
         response_model=ClarifyOutput,
     )
 
@@ -123,19 +113,9 @@ with execution without further clarification.
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
 async def _call_sufficiency_llm(prompt: str, qa_pairs: str) -> SufficiencyOutput:
-    return await client.chat.completions.create(
-        model=settings.model_sonnet,
-        max_tokens=256,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"Original prompt: {prompt}\n\n"
-                    f"Q&A:\n{qa_pairs}"
-                ),
-            }
-        ],
-        system=_SUFFICIENCY_SYSTEM,
+    return await llm_client.structured_generate(
+        system_prompt=_SUFFICIENCY_SYSTEM,
+        user_prompt=f"Original prompt: {prompt}\n\nQ&A:\n{qa_pairs}",
         response_model=SufficiencyOutput,
     )
 
@@ -189,11 +169,9 @@ Also update the task classification if answers changed the nature of the task.
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
 async def _call_rescorer_llm(combined: str) -> ReScoreOutput:
-    return await client.chat.completions.create(
-        model=settings.model_haiku,
-        max_tokens=512,
-        messages=[{"role": "user", "content": combined}],
-        system=_RESCORER_SYSTEM,
+    return await llm_client.structured_generate(
+        system_prompt=_RESCORER_SYSTEM,
+        user_prompt=combined,
         response_model=ReScoreOutput,
     )
 

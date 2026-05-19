@@ -13,10 +13,11 @@ direct Anthropic call so the pipeline never breaks.
 from __future__ import annotations
 
 import structlog
-from anthropic import AsyncAnthropic
+from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from backend.config import settings
+from backend.core.llm import llm_client
 
 log = structlog.get_logger(__name__)
 
@@ -70,7 +71,8 @@ except Exception as exc:
     log.info("dspy.not_available", reason=str(exc))
 
 
-_anthropic = AsyncAnthropic(api_key=settings.anthropic_api_key)
+class _SynthesisOutput(BaseModel):
+    master_prompt: str
 
 
 def _format_user_message(
@@ -107,21 +109,12 @@ async def synthesize(
     )
 
     try:
-        response = await _anthropic.messages.create(
-            model=settings.model_sonnet,
-            max_tokens=2048,
-            system=[
-                {
-                    "type": "text",
-                    "text": SYSTEM_PREAMBLE,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_msg}],
+        result = await llm_client.structured_generate(
+            system_prompt=SYSTEM_PREAMBLE,
+            user_prompt=user_msg,
+            response_model=_SynthesisOutput,
         )
-        text = response.content[0].text if response.content else raw_prompt
-        usage = response.usage
-        return text, usage.input_tokens or 0, usage.output_tokens or 0
+        return result.master_prompt, 0, 0
     except Exception as exc:
         log.error("synthesis.error", error=str(exc))
         raise  # Let tenacity retry it

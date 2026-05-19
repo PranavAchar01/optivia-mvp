@@ -8,9 +8,10 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import structlog
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
 
 from backend.config import settings
 from backend.core.models import Outcome, ProjectContext, UserFeedback
@@ -61,10 +62,20 @@ app.add_middleware(
 # Anthropic API proxy — Claude Code points ANTHROPIC_BASE_URL here (§6.5)
 app.include_router(proxy_router)
 
+stream_router = APIRouter(prefix="/stream")
+app.include_router(stream_router)
+
 
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
+
+class StreamOptimizeRequest(BaseModel):
+    prompt: str
+    user_id: str = ""
+    workspace_id: str = ""
+    project_context: Optional[ProjectContext] = None
+    workflow_name: Optional[str] = "optivia_mvp"
 
 class OptimizeRequest(BaseModel):
     prompt: str
@@ -474,3 +485,99 @@ async def metrics(workspace_id: str | None = None) -> dict[str, Any]:
     pushes the result to Slack.
     """
     return await db_client.aggregate_metrics(workspace_id)
+
+
+# from backend.core.workflow_manager import manager as workflow_manager
+
+@stream_router.post("/optimize")
+async def stream_optimize(req: StreamOptimizeRequest):
+    initial_state: OptiviaState = {
+        "request_id": str(uuid.uuid4()),
+        "user_id": req.user_id or "00000000-0000-0000-0000-000000000000",
+        "workspace_id": req.workspace_id or "00000000-0000-0000-0000-000000000000",
+        "raw_prompt": req.prompt,
+        "attached_files": [],
+        "project_context": req.project_context or ProjectContext(),
+        "clarifications": [],
+        "clarification_round": 0,
+        "consecutive_high_quality": 0,
+        "execution_trace": [],
+        "adaptation_actions": [],
+        "obs_tokens": 0,
+        "memory_tokens": 0,
+        "plan_tokens": 0,
+        "action_tokens": 0,
+        "turn_index": 0,
+    }
+
+    try:
+        active_pipeline = pipeline
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    async def event_generator():
+        workflow_name = req.workflow_name or ""
+        start_msg = json.dumps({"message": f"Starting workflow '{workflow_name}'..."})
+        yield f"event: start\ndata: {start_msg}\n\n"
+
+        full_result: OptiviaState | None = None
+        try:
+            async for chunk in active_pipeline.astream(initial_state, stream_mode=["updates", "values"]):
+                kind, event = chunk
+                if kind == "updates":
+                    for node_name, state_update in event.items():
+                        yield f"event: progress\ndata: {json.dumps({'node': node_name, 'message': f'Completed {node_name}'})}\n\n"
+                        if "error" in state_update:
+                            yield f"event: error\ndata: {json.dumps({'detail': state_update['error']})}\n\n"
+                            return
+                elif kind == "values":
+                    full_result = event  # full accumulated state after each node
+        except Exception as exc:
+            log.error("stream_optimize.pipeline_error", error=str(exc))
+            yield f"event: error\ndata: {json.dumps({'detail': 'An error occurred during workflow execution.', 'error': str(exc)})}\n\n"
+            return
+
+        if full_result is None:
+            yield f"event: error\ndata: {json.dumps({'detail': 'Pipeline produced no output'})}\n\n"
+            return
+
+        master = full_result.get("master_prompt")
+        routing = full_result.get("routing_decision")
+        scores = full_result.get("scores_updated") or full_result.get("scores")
+        task_cls = full_result.get("task_classification")
+        plan = full_result.get("workflow_plan")
+        fleet_dag = full_result.get("fleet_dag") or {}
+
+        mega_prompt: str = (
+            full_result.get("mega_prompt")
+            or (master.synthesized_prompt if master else req.prompt)
+        )
+
+        request_id = full_result.get("request_id", "")
+        if request_id and mega_prompt:
+            register_master_prompt(request_id, mega_prompt)
+
+        final_data = {
+            "Task_Type": fleet_dag.get("Task Type", task_cls.task_type.value if task_cls else "unknown"),
+            "Complexity_Score": fleet_dag.get("Complexity Score", scores.complexity if scores else 5),
+            "Environment_Target": fleet_dag.get("Environment Target", "Claude Code"),
+            "Nodes": fleet_dag.get("Nodes", []),
+            "Edges": fleet_dag.get("Edges", []),
+            "Critical_Path": fleet_dag.get("Critical Path", ""),
+            "request_id": request_id,
+            "trace_id": full_result.get("trace_id", ""),
+            "master_prompt": mega_prompt,
+            "model": routing.chosen_model if routing else settings.model_sonnet,
+            "n_agents": routing.n_agents if routing else 1,
+            "slash_commands": routing.slash_commands if routing else [],
+            "workflow_plan": _extract_plan_labels(plan),
+            "complexity": scores.complexity if scores else 5,
+            "specificity": scores.specificity if scores else 0.5,
+            "task_type": task_cls.task_type.value if task_cls else "unknown",
+            "requires_clarification": False,
+            "clarification_questions": []
+        }
+
+        yield f"event: end\ndata: {json.dumps({'message': 'Optimization complete.', 'result': final_data})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

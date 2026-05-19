@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import structlog
-import instructor
-from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -13,10 +11,9 @@ from backend.core.math_core import enrich_scores
 from backend.core.models import TaskClassification, TaskScores, TaskType
 from backend.pipeline.reflection import CONFIDENCE_THRESHOLD, reflect
 from backend.pipeline.state import OptiviaState
+from backend.core.llm import llm_client
 
 log = structlog.get_logger(__name__)
-
-client = instructor.from_anthropic(AsyncAnthropic(api_key=settings.anthropic_api_key))
 
 _SYSTEM_PROMPT = """\
 You are the Optivia task classifier and scorer. Given a developer's prompt, produce:
@@ -42,16 +39,9 @@ class ClassifyScoreOutput(BaseModel):
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
 async def _call_llm(raw: str, ctx_str: str) -> ClassifyScoreOutput:
-    return await client.chat.completions.create(
-        model=settings.model_haiku,
-        max_tokens=512,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Prompt to classify:\n\"\"\"\n{raw}\n\"\"\"{ctx_str}",
-            }
-        ],
-        system=_SYSTEM_PROMPT,
+    return await llm_client.structured_generate(
+        system_prompt=_SYSTEM_PROMPT,
+        user_prompt=f"Prompt to classify:\n\"\"\"\n{raw}\n\"\"\"{ctx_str}",
         response_model=ClassifyScoreOutput,
     )
 

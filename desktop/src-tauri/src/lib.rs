@@ -65,13 +65,33 @@ optivia_claude_shim() {
     local q="$HOME/.optivia/queue"
     if [ -d "$q" ]; then
       local pending
-      pending="$(ls -t "$q"/*.json 2>/dev/null | head -n 1)"
+      pending="$(ls -t "$q"/[0-9]*.json 2>/dev/null | head -n 1)"
       if [ -n "$pending" ]; then
-        local prompt
-        prompt="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("prompt",""))' "$pending")"
-        mv "$pending" "${pending%.json}.consumed.json"
+        local payload prompt model slash_commands args
+        payload="$(/usr/bin/python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+print(d.get("prompt",""))
+print("---MODEL---")
+print(d.get("model","") or "")
+print("---SLASH---")
+cmds=d.get("slash_commands") or []
+print(" ".join(cmds) if cmds else "")
+' "$pending")"
+        prompt="$(echo "$payload" | awk '/^---MODEL---$/{exit} {print}')"
+        model="$(echo "$payload" | awk '/^---MODEL---$/,/^---SLASH---$/{if(!/^---/){print}}')"
+        slash_commands="$(echo "$payload" | awk '/^---SLASH---$/{found=1;next} found{print}')"
+        mv "$pending" "${pending%.json}.consumed"
         if [ -n "$prompt" ]; then
-          command claude "$prompt"
+          args=()
+          [ -n "$model" ] && args+=(--model "$model")
+          if [ -n "$slash_commands" ]; then
+            full_prompt="$slash_commands
+$prompt"
+          else
+            full_prompt="$prompt"
+          fi
+          command claude "${args[@]}" "$full_prompt"
           return $?
         fi
       fi

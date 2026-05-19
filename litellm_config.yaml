@@ -20,6 +20,13 @@ model_list:
       api_key: os.environ/ANTHROPIC_API_KEY
       max_tokens: 32768
 
+  # Gemini Pro (for testing)
+  - model_name: gemini-pro
+    litellm_params:
+      model: gemini/gemini-pro
+      api_key: os.environ/GEMINI_API_KEY
+      max_tokens: 8192
+
   # Fallback chain (§8.3): sonnet → sonnet-4-5 → bedrock
   - model_name: claude-sonnet-4-6-fallback
     litellm_params:

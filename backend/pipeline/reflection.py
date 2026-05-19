@@ -16,16 +16,13 @@ import re
 from typing import Any
 
 import structlog
-import instructor
-from anthropic import AsyncAnthropic
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from backend.config import settings
+from backend.core.llm import llm_client
 
 log = structlog.get_logger(__name__)
-
-client = instructor.from_anthropic(AsyncAnthropic(api_key=settings.anthropic_api_key))
 
 CONFIDENCE_THRESHOLD = 0.7
 SKIP_QUALITY_THRESHOLD = 0.85
@@ -71,11 +68,9 @@ def _diverges_from_lessons(output: str, lessons: list[Any]) -> bool:
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4), reraise=True)
 async def _call_reflect(prompt: str) -> ReflectionVerdict:
-    return await client.chat.completions.create(
-        model=settings.model_haiku,
-        max_tokens=200,
-        messages=[{"role": "user", "content": prompt}],
-        system=_REFLECT_SYSTEM,
+    return await llm_client.structured_generate(
+        system_prompt=_REFLECT_SYSTEM,
+        user_prompt=prompt,
         response_model=ReflectionVerdict,
     )
 

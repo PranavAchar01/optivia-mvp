@@ -23,18 +23,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 import structlog
-import instructor
-from anthropic import AsyncAnthropic
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from backend.config import settings
+from backend.core.llm import llm_client
 from backend.core.models import ExperienceRecord, ExperienceScope, TaskType
 from backend.pipeline.state import OptiviaState
 
 log = structlog.get_logger(__name__)
-
-client = instructor.from_anthropic(AsyncAnthropic(api_key=settings.anthropic_api_key))
 
 # ExpeL operator deltas
 _DELTA_TRUST = 0.25
@@ -81,11 +77,9 @@ Rules:
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=5), reraise=True)
 async def _call_extractor(context: str) -> ExtractedExperience:
-    return await client.chat.completions.create(
-        model=settings.model_haiku,
-        max_tokens=512,
-        messages=[{"role": "user", "content": context}],
-        system=_EXTRACT_SYSTEM,
+    return await llm_client.structured_generate(
+        system_prompt=_EXTRACT_SYSTEM,
+        user_prompt=context,
         response_model=ExtractedExperience,
     )
 

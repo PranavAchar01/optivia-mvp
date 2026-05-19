@@ -7,19 +7,16 @@ training labels (RouteLLM's data-augmentation trick — §5.4 head 1).
 
 from __future__ import annotations
 
-import instructor
 import structlog
-from anthropic import AsyncAnthropic
 from pydantic import BaseModel, Field
 
 from backend.config import settings
+from backend.core.llm import llm_client
 from backend.core.math_core import resolve_slash_commands
 from backend.core.models import RoutingDecision
 from backend.routing.base import Router, RoutingContext
 
 log = structlog.get_logger(__name__)
-
-_client = instructor.from_anthropic(AsyncAnthropic(api_key=settings.anthropic_api_key))
 
 
 class JudgeOutput(BaseModel):
@@ -65,11 +62,9 @@ class LLMJudgeRouter:
         )
 
         try:
-            result: JudgeOutput = await _client.chat.completions.create(
-                model=settings.model_haiku,
-                max_tokens=256,
-                messages=[{"role": "user", "content": user_msg}],
-                system=_SYSTEM,
+            result: JudgeOutput = await llm_client.structured_generate(
+                system_prompt=_SYSTEM,
+                user_prompt=user_msg,
                 response_model=JudgeOutput,
             )
         except Exception as exc:

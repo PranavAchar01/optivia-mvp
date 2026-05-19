@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     # Anthropic
     anthropic_api_key: str = ""
+    gemini_api_key: str = ""
 
     # Database
     database_url: str = "postgresql+asyncpg://localhost/optivia"
@@ -44,9 +45,9 @@ class Settings(BaseSettings):
     optivia_api_base: str = "http://localhost:8000"
 
     # Model tiers (Stage 1 heuristic routing)
-    model_haiku: str = "claude-haiku-4-5"
-    model_sonnet: str = "claude-sonnet-4-6"
-    model_opus: str = "claude-opus-4-6"
+    model_haiku: str = "gemini-pro"
+    model_sonnet: str = "gemini-pro"
+    model_opus: str = "gemini-pro"
 
     # Clarification predicate thresholds (§4.5) — per-tenant configurable
     clarify_kappa_threshold: int = 7
